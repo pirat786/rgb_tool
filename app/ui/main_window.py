@@ -3,8 +3,9 @@ import csv
 import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QSplitter, QGroupBox, QLabel, QTableWidget, QTableWidgetItem, 
-                             QHeaderView, QFileDialog, QMessageBox, QApplication)
-from PyQt6.QtGui import QAction, QColor
+                             QHeaderView, QFileDialog, QMessageBox, QApplication, QListWidget, QSlider,
+                             QCheckBox, QSpinBox)
+from PyQt6.QtGui import QAction, QColor, QIcon
 from PyQt6.QtCore import Qt, QSettings
 
 from app.ui.styles import DARK_STYLESHEET
@@ -22,8 +23,25 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("RGBTools", "RGBAnalyzer")
         self.last_dir = self.settings.value("last_dir", "")
         self.current_stats = None
+        self.image_paths = []
+        self.current_image_index = -1
+
+        # Set Window Icon
+        icon_path = self.get_resource_path(os.path.join("assets", "image.ico"))
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.setup_ui()
+
+    def get_resource_path(self, relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+
+        return os.path.join(base_path, relative_path)
 
     def setup_ui(self):
         # Menu Bar
@@ -45,6 +63,10 @@ class MainWindow(QMainWindow):
         btn_open = QPushButton("📂 Открыть фото")
         btn_open.clicked.connect(self.open_image)
         controls_layout.addWidget(btn_open)
+
+        btn_clear = QPushButton("🗑 Очистить список")
+        btn_clear.clicked.connect(self.clear_images)
+        controls_layout.addWidget(btn_clear)
         
         btn_fit = QPushButton("⤢ Вписать в окно")
         btn_fit.clicked.connect(self.fit_image)
@@ -61,8 +83,14 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(splitter)
 
+        # Image List
+        self.image_list = QListWidget()
+        self.image_list.currentRowChanged.connect(self.on_image_selected)
+        splitter.addWidget(self.image_list)
+
         # Viewer
         self.viewer = ImageViewer()
+        self.viewer.grid_clicked.connect(self.calculate_stats) # Init calculate stats on grid click
         splitter.addWidget(self.viewer)
 
         # Right Panel (Stats + Table)
@@ -88,12 +116,53 @@ class MainWindow(QMainWindow):
         
         right_layout.addWidget(stats_group)
 
+        # --- Overlay Group ---
+        overlay_group = QGroupBox("Наложение")
+        overlay_layout = QVBoxLayout(overlay_group)
+        
+        btn_set_overlay = QPushButton("📌 Сделать наложением")
+        btn_set_overlay.clicked.connect(self.set_overlay)
+        overlay_layout.addWidget(btn_set_overlay)
+        
+        btn_remove_overlay = QPushButton("❌ Убрать наложение")
+        btn_remove_overlay.clicked.connect(self.remove_overlay)
+        overlay_layout.addWidget(btn_remove_overlay)
+        
+        overlay_layout.addWidget(QLabel("Прозрачность:"))
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(0, 100)
+        self.opacity_slider.setValue(50)
+        self.opacity_slider.valueChanged.connect(self.change_opacity)
+        overlay_layout.addWidget(self.opacity_slider)
+        
+        right_layout.addWidget(overlay_group)
+
         # --- Histogram Group ---
         hist_group = QGroupBox("Гистограмма RGB")
         hist_layout = QVBoxLayout(hist_group)
         self.histogram = HistogramWidget()
         hist_layout.addWidget(self.histogram)
         right_layout.addWidget(hist_group)
+
+        # --- Grid Group ---
+        grid_group = QGroupBox("Сетка")
+        grid_layout = QVBoxLayout(grid_group)
+        
+        self.cb_grid = QCheckBox("Показать сетку")
+        self.cb_grid.stateChanged.connect(self.toggle_grid)
+        grid_layout.addWidget(self.cb_grid)
+        
+        grid_controls = QHBoxLayout()
+        grid_controls.addWidget(QLabel("Размер ячейки:"))
+        self.sb_cell_size = QSpinBox()
+        self.sb_cell_size.setRange(10, 500)
+        self.sb_cell_size.setValue(50)
+        self.sb_cell_size.valueChanged.connect(self.update_grid_size)
+        grid_controls.addWidget(self.sb_cell_size)
+        grid_layout.addLayout(grid_controls)
+        
+        right_layout.addWidget(grid_group)
+
 
         # --- Colors Table ---
         table_group = QGroupBox("Детализация цветов")
@@ -107,36 +176,121 @@ class MainWindow(QMainWindow):
         
         right_layout.addWidget(table_group)
 
-        # Set initial splitter sizes (65% image, 35% stats)
-        splitter.setSizes([800, 450])
+        # Set initial splitter sizes (15% list, 55% image, 30% stats)
+        splitter.setSizes([200, 700, 350])
 
         self.last_command = ""
 
     def open_image(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Открыть изображение", self.last_dir, "Images (*.png *.jpg *.jpeg *.bmp *.tif)")
-        if file_name:
-            self.last_dir = os.path.dirname(file_name)
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Открыть изображения", self.last_dir, "Images (*.png *.jpg *.jpeg *.bmp *.tif)")
+        if file_names:
+            self.last_dir = os.path.dirname(file_names[0])
             self.settings.setValue("last_dir", self.last_dir)
             
-            self.viewer.load_image(file_name)
-            self.lbl_results.setText("Изображение загружено.\nПереместите красный квадрат на серую область.")
-            self.table.setRowCount(0)
-            self.histogram.set_data([], [], [])
-            self.btn_copy.setEnabled(False)
-            self.current_stats = None
+            for f in file_names:
+                if f not in self.image_paths:
+                    self.image_paths.append(f)
+                    self.image_list.addItem(os.path.basename(f))
+            
+            if self.image_list.count() > 0 and self.image_list.currentRow() == -1:
+                self.image_list.setCurrentRow(0)
+
+    def clear_images(self):
+        self.image_paths = []
+        self.image_list.clear()
+        self.viewer.scene.clear()
+        self.lbl_results.setText("Список очищен.")
+        self.table.setRowCount(0)
+        self.histogram.set_data([], [], [])
+        self.current_stats = None
+
+    def on_image_selected(self, index):
+        if 0 <= index < len(self.image_paths):
+            path = self.image_paths[index]
+            self.viewer.load_image(path)
+            self.lbl_results.setText(f"Загружено: {os.path.basename(path)}")
+            
+            # Auto-calculate stats if we have a rect
+            if self.viewer.get_selection_rect():
+                self.calculate_stats()
+            else:
+                self.table.setRowCount(0)
+                self.histogram.set_data([], [], [])
+                self.current_stats = None
+            
+            # Reset overlay opacity slider if needed, or keep it?
+            # Keeping it allows persistent overlay settings.
+
+    def set_overlay(self):
+        row = self.image_list.currentRow()
+        if row >= 0:
+            path = self.image_paths[row]
+            self.viewer.set_overlay(path)
+            self.viewer.set_overlay_opacity(self.opacity_slider.value() / 100.0)
+            QMessageBox.information(self, "Наложение", f"Изображение '{os.path.basename(path)}' установлено как наложение.")
+
+    def remove_overlay(self):
+        self.viewer.set_overlay(None)
+
+    def change_opacity(self, value):
+        self.viewer.set_overlay_opacity(value / 100.0)
 
     def fit_image(self):
         if self.viewer.scene:
             self.viewer.fitInView(self.viewer.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
-    def calculate_stats(self):
-        rect = self.viewer.get_selection_rect()
+    def toggle_grid(self, state):
+        self.viewer.set_grid(self.cb_grid.isChecked(), self.sb_cell_size.value())
+
+    def update_grid_size(self, value):
+        if self.cb_grid.isChecked():
+            self.viewer.set_grid(True, value)
+
+    def calculate_stats(self, rect=None):
+        if rect is None or isinstance(rect, bool): # Handle direct call or click event if no rect passed (though signal passes rect)
+            # Check if arg is rect or just a connector triggered bool
+            # If triggered from button, rect is False.
+            rect = self.viewer.get_selection_rect()
+        
+        # If rect came from signal (QRectF), convert to tuple
+        if hasattr(rect, 'getRect'): # It is a QRectF
+             # Convert QRectF to x, y, w, h
+             # BUT wait, calculate_stats expects int tuple relative to image?
+             # viewer.get_selection_rect() returns (x, y, w, h) ints.
+             # viewer.on_grid_click emits cell_rect which is QRectF in scene coords (which matches image coords)
+             
+             # Let's align.
+             r = rect
+             # Important: We need to make sure we treat it as relative to image 0,0
+             # which our scene assumes since we add Pixmap at 0,0.
+             new_rect = (int(r.x()), int(r.y()), int(r.width()), int(r.height()))
+             rect = new_rect
+
         if not rect:
             self.lbl_results.setText("Ошибка: Не выделена область или файл не найден.")
             self.btn_copy.setEnabled(False)
             return
 
+        # Base Image Stats
         stats = calculate_image_stats(self.viewer.image_path, rect)
+        
+        # Overlay Stats
+        overlay_stats = None
+        overlay_info = self.viewer.get_overlay_info()
+        if overlay_info:
+            overlay_path, overlay_pos = overlay_info
+            
+            # Calculate rect relative to overlay
+            # rect is (x, y, w, h) in base image coordinates (which matches scene coords for base image at 0,0)
+            # overlay is at overlay_pos
+            
+            ox = int(rect[0] - overlay_pos.x())
+            oy = int(rect[1] - overlay_pos.y())
+            ow = rect[2]
+            oh = rect[3]
+            
+            overlay_stats = calculate_image_stats(overlay_path, (ox, oy, ow, oh))
+
         if stats:
             self.current_stats = stats
             r = stats['r']
@@ -159,10 +313,28 @@ class MainWindow(QMainWindow):
                 f"<b>Всего пикселей:</b> {stats['count']}<br>"
                 f"<b>Уникальных цветов:</b> {len(stats['unique_colors'])}"
             )
+            
+            if overlay_stats:
+                or_ = overlay_stats['r']
+                og = overlay_stats['g']
+                ob = overlay_stats['b']
+                
+                dr = r - or_
+                dg = g - og
+                db = b - ob
+                
+                res_text += (
+                    f"<br><hr><br>"
+                    f"<b>Наложение RGB:</b> R={or_:.1f}, G={og:.1f}, B={ob:.1f}<br>"
+                    f"<b>Delta (Base - Overlay):</b> <span style='color: {'#ff6b6b' if dr < 0 else '#6bff6b'}'>R={dr:+.1f}</span>, "
+                    f"<span style='color: {'#ff6b6b' if dg < 0 else '#6bff6b'}'>G={dg:+.1f}</span>, "
+                    f"<span style='color: {'#ff6b6b' if db < 0 else '#6bff6b'}'>B={db:+.1f}</span>"
+                )
+
             self.lbl_results.setText(res_text)
             self.btn_copy.setEnabled(True)
 
-            # Update Histogram
+            # Update Histogram (Base only for now, or maybe combined?)
             self.histogram.set_data(*stats['hist'])
 
             # Populate table
