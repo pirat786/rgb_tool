@@ -3,19 +3,40 @@ from PyQt6.QtGui import QPixmap, QColor, QPen, QBrush, QCursor, QPainter
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QObject
 
 class ResizableRectItem(QGraphicsRectItem):
-    handle_size = 8
+    # Target size in screen pixels
+    screen_handle_size = 14 
 
     def __init__(self, rect=QRectF(0, 0, 100, 100), parent=None):
         super().__init__(rect, parent)
         self.setFlags(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable | 
                       QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable | 
                       QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges)
-        self.setPen(QPen(Qt.GlobalColor.red, 2))
+        
+        pen = QPen(Qt.GlobalColor.red, 2)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        
         self.setBrush(QBrush(QColor(255, 0, 0, 50)))
         self.setAcceptHoverEvents(True)
         self.current_handle = None
         self.mouse_press_pos = None
         self.mouse_press_rect = None
+
+    def get_handle_size(self):
+        """Calculate handle size in scene coordinates to maintain constant screen size"""
+        if not self.scene() or not self.scene().views():
+             return 20.0 # Fallback
+        
+        view = self.scene().views()[0]
+        # Get scale from transform (m11 is x scale)
+        scale = view.transform().m11()
+        
+        if scale <= 0: return 20.0
+        
+        # We want screen_handle_size pixels on screen
+        # size_scene * scale = size_screen
+        # size_scene = size_screen / scale
+        return self.screen_handle_size / scale
 
     def hoverMoveEvent(self, event):
         pos = event.pos()
@@ -66,8 +87,8 @@ class ResizableRectItem(QGraphicsRectItem):
             if 'bottom' in self.current_handle:
                 new_h += diff.y()
 
-            if new_w < 10: new_w = 10
-            if new_h < 10: new_h = 10
+            if new_w < 30: new_w = 30
+            if new_h < 30: new_h = 30
             
             self.setRect(new_x, new_y, new_w, new_h)
         else:
@@ -80,9 +101,9 @@ class ResizableRectItem(QGraphicsRectItem):
     def get_handle_at(self, pos):
         r = self.rect()
         x, y, w, h = r.x(), r.y(), r.width(), r.height()
-        s = self.handle_size
+        s = self.get_handle_size() # Dynamic size
         
-        # Check corners
+        # Check corners (with some tolerance maybe? no, s is already screen size adjusted)
         if QRectF(x, y, s, s).contains(pos): return 'top_left'
         if QRectF(x+w-s, y, s, s).contains(pos): return 'top_right'
         if QRectF(x, y+h-s, s, s).contains(pos): return 'bottom_left'
@@ -100,12 +121,14 @@ class ResizableRectItem(QGraphicsRectItem):
         super().paint(painter, option, widget)
         
         # Draw handles
-        painter.setPen(QPen(Qt.GlobalColor.blue, 1))
+        pen = QPen(Qt.GlobalColor.blue, 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
         painter.setBrush(QBrush(Qt.GlobalColor.white))
         
         r = self.rect()
         x, y, w, h = r.x(), r.y(), r.width(), r.height()
-        s = self.handle_size
+        s = self.get_handle_size()
         
         handles = [
             (x, y), (x+w-s, y), (x, y+h-s), (x+w-s, y+h-s), # Corners
@@ -121,7 +144,7 @@ class GridOverlayItem(QGraphicsItem):
         self.rect_area = rect
         self.cell_size = cell_size
         self.callback = callback
-        self.setZValue(200) # Grid is on top of everything
+        self.setZValue(80) # Grid below selection (100) but above overlay (50)
         # Accept hover events to show highlight? Maybe later.
         
     def boundingRect(self):
@@ -129,7 +152,9 @@ class GridOverlayItem(QGraphicsItem):
     
     def paint(self, painter, option, widget=None):
         # Draw grid lines
-        painter.setPen(QPen(QColor(0, 255, 255, 100), 1, Qt.PenStyle.DashLine))
+        pen = QPen(QColor(0, 255, 255, 100), 1, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
         
         l, t, w, h = self.rect_area.x(), self.rect_area.y(), self.rect_area.width(), self.rect_area.height()
         

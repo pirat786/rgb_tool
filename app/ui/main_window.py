@@ -155,7 +155,7 @@ class MainWindow(QMainWindow):
         grid_controls = QHBoxLayout()
         grid_controls.addWidget(QLabel("Размер ячейки:"))
         self.sb_cell_size = QSpinBox()
-        self.sb_cell_size.setRange(10, 500)
+        self.sb_cell_size.setRange(10, 10000)
         self.sb_cell_size.setValue(50)
         self.sb_cell_size.valueChanged.connect(self.update_grid_size)
         grid_controls.addWidget(self.sb_cell_size)
@@ -180,6 +180,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([200, 700, 350])
 
         self.last_command = ""
+        self.last_calculated_params = None
 
     def open_image(self):
         file_names, _ = QFileDialog.getOpenFileNames(self, "Открыть изображения", self.last_dir, "Images (*.png *.jpg *.jpeg *.bmp *.tif)")
@@ -203,6 +204,7 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(0)
         self.histogram.set_data([], [], [])
         self.current_stats = None
+        self.last_calculated_params = None
 
     def on_image_selected(self, index):
         if 0 <= index < len(self.image_paths):
@@ -270,6 +272,12 @@ class MainWindow(QMainWindow):
             self.lbl_results.setText("Ошибка: Не выделена область или файл не найден.")
             self.btn_copy.setEnabled(False)
             return
+
+        # Optimization: Check if we are recalculating the same thing
+        current_params = (self.viewer.image_path, rect)
+        if hasattr(self, 'last_calculated_params') and self.last_calculated_params == current_params:
+            return
+        self.last_calculated_params = current_params
 
         # Base Image Stats
         stats = calculate_image_stats(self.viewer.image_path, rect)
