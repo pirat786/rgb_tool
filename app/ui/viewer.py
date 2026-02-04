@@ -1,6 +1,7 @@
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem, QGraphicsOpacityEffect, QGraphicsItem
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem, QGraphicsOpacityEffect, QGraphicsItem, QGraphicsLineItem
 from PyQt6.QtGui import QPixmap, QColor, QPen, QBrush, QCursor, QPainter
-from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QObject, QLineF
+
 
 class ResizableRectItem(QGraphicsRectItem):
     # Target size in screen pixels
@@ -138,6 +139,110 @@ class ResizableRectItem(QGraphicsRectItem):
         for hx, hy in handles:
             painter.drawRect(QRectF(hx, hy, s, s))
 
+class LineItem(QGraphicsLineItem):
+    screen_handle_size = 14
+
+    def __init__(self, line, parent=None):
+        super().__init__(line, parent)
+        self.setFlags(QGraphicsLineItem.GraphicsItemFlag.ItemIsMovable | 
+                      QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable | 
+                      QGraphicsLineItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+        
+        pen = QPen(Qt.GlobalColor.green, 2)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        
+        self.setAcceptHoverEvents(True)
+        self.current_handle = None
+        self.mouse_press_pos = None
+        self.mouse_press_line = None
+
+    def get_handle_size(self):
+        if not self.scene() or not self.scene().views(): return 20.0
+        view = self.scene().views()[0]
+        scale = view.transform().m11()
+        if scale <= 0: return 20.0
+        return self.screen_handle_size / scale
+
+    def hoverMoveEvent(self, event):
+        pos = event.pos()
+        handle = self.get_handle_at(pos)
+        if handle:
+            self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor)) # Move whole line
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self.current_handle = self.get_handle_at(event.pos())
+        if self.current_handle:
+            self.mouse_press_pos = event.pos()
+            self.mouse_press_line = self.line()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.current_handle:
+            pos = event.pos()
+            line = self.line()
+            
+            p1 = line.p1()
+            p2 = line.p2()
+            
+            # Map pos to scene coordinates?
+            # event.pos() is in item coordinates. 
+            # Our line is defined in item coordinates.
+            # But wait, QGraphicsLineItem draws from p1 to p2. 
+            # Usually we set pos to (0,0) and define line relative to that.
+            
+            if self.current_handle == 'p1':
+                p1 = pos
+            elif self.current_handle == 'p2':
+                p2 = pos
+            
+            self.setLine(p1.x(), p1.y(), p2.x(), p2.y())
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.current_handle = None
+        super().mouseReleaseEvent(event)
+
+    def get_handle_at(self, pos):
+        line = self.line()
+        s = self.get_handle_size()
+        
+        p1 = line.p1()
+        p2 = line.p2()
+        
+        if QRectF(p1.x() - s/2, p1.y() - s/2, s, s).contains(pos): return 'p1'
+        if QRectF(p2.x() - s/2, p2.y() - s/2, s, s).contains(pos): return 'p2'
+        
+        return None
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        
+        # Draw handles
+        s = self.get_handle_size()
+        line = self.line()
+        
+        pen = QPen(Qt.GlobalColor.green, 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(Qt.GlobalColor.white))
+        
+        p1 = line.p1()
+        p2 = line.p2()
+        
+        painter.drawEllipse(p1, s/2, s/2)
+        painter.drawEllipse(p2, s/2, s/2)
+
 class GridOverlayItem(QGraphicsItem):
     def __init__(self, rect, cell_size, callback, parent=None):
         super().__init__(parent)
@@ -199,7 +304,8 @@ class GridOverlayItem(QGraphicsItem):
 
 
 class ImageViewer(QGraphicsView):
-    grid_clicked = pyqtSignal(QRectF) # Signal to emit when grid cell is clicked
+    grid_clicked = pyqtSignal(QRectF) 
+    item_changed = pyqtSignal() # Signal when roi changes (release)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -208,6 +314,8 @@ class ImageViewer(QGraphicsView):
         self.image_item = None
         self.overlay_item = None
         self.rect_item = None
+        self.line_item = None
+        
         self.pixmap = None
         self.overlay_pixmap = None
         self.image_path = None
@@ -217,13 +325,94 @@ class ImageViewer(QGraphicsView):
         self.grid_cell_size = 50
         self.is_grid_enabled = False
         
-        # Enable mouse tracking for rubber band or custom selection
+        self.current_tool = 'rect' # 'rect' or 'line'
+        self.is_drawing_line = False
+        
+        # Enable mouse tracking
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setBackgroundBrush(QBrush(QColor("#222")))
+
+    def set_tool(self, tool_mode):
+        self.current_tool = tool_mode
+        self.update_tool_visibility()
+        
+        if tool_mode == 'line':
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            
+        self.item_changed.emit()
+
+    def update_tool_visibility(self):
+        if self.rect_item:
+            self.rect_item.setVisible(self.current_tool == 'rect')
+        # Line item is visible only if we have one, but we might hide it if it's invalid?
+        # Actually, let's keep it visible if it exists, but maybe we want to hide it if we are switching to rect?
+        # Yes, standard behavior:
+        if self.line_item:
+            self.line_item.setVisible(self.current_tool == 'line')
+
+    def mousePressEvent(self, event):
+        # Allow items to handle event first (e.g. handles)
+        super().mousePressEvent(event)
+        
+        if event.isAccepted(): return
+
+        if self.current_tool == 'line' and self.image_item:
+            # Start drawing line
+            sp = self.mapToScene(event.pos())
+            # Ensure coordinates are within image? Or allow drawing outside?
+            # Better to clamp to image rect?
+            # For now, raw coords.
+            
+            if not self.line_item:
+                self.line_item = LineItem(QLineF(sp, sp))
+                self.line_item.setZValue(100)
+                self.scene.addItem(self.line_item)
+            else:
+                self.line_item.setLine(QLineF(sp, sp))
+                self.line_item.setPos(0, 0) # Reset pos since we set absolute line coords
+                self.line_item.setVisible(True)
+            
+            self.is_drawing_line = True
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        
+        if self.is_drawing_line and self.line_item:
+            sp = self.mapToScene(event.pos())
+            line = self.line_item.line()
+            line.setP2(sp)
+            self.line_item.setLine(line)
+            # Optional: dynamic update of profile while dragging? 
+            # Might be heavy, let's wait for release or timer.
+            # self.item_changed.emit() 
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        
+        if self.is_drawing_line:
+            self.is_drawing_line = False
+            self.item_changed.emit()
+
+    def get_line_coords(self):
+        if not self.line_item or not self.image_path: return None
+        
+        # Line is relative to its pos.
+        line = self.line_item.line()
+        pos = self.line_item.pos()
+        
+        p1 = line.p1() + pos
+        p2 = line.p2() + pos
+        
+        return (int(p1.x()), int(p1.y()), int(p2.x()), int(p2.y()))
 
     def get_overlay_info(self):
         if self.overlay_item and self.overlay_path:
@@ -245,6 +434,12 @@ class ImageViewer(QGraphicsView):
         if self.rect_item:
             current_rect = self.rect_item.rect()
             current_pos = self.rect_item.pos()
+            
+        # Save current line settings
+        current_line = None
+        if self.line_item:
+            current_line = self.line_item.line()
+            current_line_pos = self.line_item.pos()
 
         self.scene.clear()
         self.image_item = self.scene.addPixmap(self.pixmap)
@@ -274,16 +469,27 @@ class ImageViewer(QGraphicsView):
             self.rect_item.setPos(current_pos)
         else:
             self.rect_item = ResizableRectItem(QRectF(0, 0, 100, 100))
-            # Center the rect
             center = self.pixmap.rect().center()
             self.rect_item.setPos(center.x() - 50, center.y() - 50)
             
-        self.rect_item.setZValue(100) # Ensure it's on top
+        self.rect_item.setZValue(100) 
         self.scene.addItem(self.rect_item)
         
-        # Fit to view initially only if it's the first load? 
-        # Or maybe we shouldn't refit if we are just switching images to compare?
-        # For now, let's keep fitInView as it might be a different size image.
+        # Restore or create line item
+        if current_line:
+            self.line_item = LineItem(current_line)
+            self.line_item.setPos(current_line_pos)
+        else:
+            # Default line across middle
+            w = self.pixmap.width()
+            h = self.pixmap.height()
+            self.line_item = LineItem(QLineF(w*0.2, h/2, w*0.8, h/2))
+            
+        self.line_item.setZValue(100)
+        self.scene.addItem(self.line_item)
+        
+        self.update_tool_visibility() # Apply current tool
+        
         self.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
         # Restore grid if enabled

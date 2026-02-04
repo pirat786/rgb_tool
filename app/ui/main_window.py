@@ -4,14 +4,14 @@ import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QSplitter, QGroupBox, QLabel, QTableWidget, QTableWidgetItem, 
                              QHeaderView, QFileDialog, QMessageBox, QApplication, QListWidget, QSlider,
-                             QCheckBox, QSpinBox)
+                             QCheckBox, QSpinBox, QTabWidget)
 from PyQt6.QtGui import QAction, QColor, QIcon
 from PyQt6.QtCore import Qt, QSettings
 
 from app.ui.styles import DARK_STYLESHEET
-from app.ui.widgets import HistogramWidget
+from app.ui.widgets import HistogramWidget, LineProfileWidget
 from app.ui.viewer import ImageViewer
-from app.core.processor import calculate_image_stats
+from app.core.processor import calculate_image_stats, calculate_line_profile
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -73,9 +73,24 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(btn_fit)
 
         btn_calc = QPushButton("▶ Рассчитать")
-        btn_calc.clicked.connect(self.calculate_stats)
+        btn_calc.clicked.connect(lambda: self.calculate_stats())
         btn_calc.setStyleSheet("background-color: #264f78; font-weight: bold;")
         controls_layout.addWidget(btn_calc)
+        
+        # Tools
+        controls_layout.addSpacing(20)
+        controls_layout.addWidget(QLabel("Инструмент:"))
+        
+        self.btn_tool_rect = QPushButton("⬛ Область")
+        self.btn_tool_rect.setCheckable(True)
+        self.btn_tool_rect.setChecked(True)
+        self.btn_tool_rect.clicked.connect(lambda: self.set_tool('rect'))
+        controls_layout.addWidget(self.btn_tool_rect)
+
+        self.btn_tool_line = QPushButton("📏 Линия")
+        self.btn_tool_line.setCheckable(True)
+        self.btn_tool_line.clicked.connect(lambda: self.set_tool('line'))
+        controls_layout.addWidget(self.btn_tool_line)
         
         main_layout.addLayout(controls_layout)
 
@@ -90,7 +105,8 @@ class MainWindow(QMainWindow):
 
         # Viewer
         self.viewer = ImageViewer()
-        self.viewer.grid_clicked.connect(self.calculate_stats) # Init calculate stats on grid click
+        self.viewer.grid_clicked.connect(self.calculate_stats) 
+        self.viewer.item_changed.connect(self.on_item_changed)
         splitter.addWidget(self.viewer)
 
         # Right Panel (Stats + Table)
@@ -103,16 +119,40 @@ class MainWindow(QMainWindow):
         stats_group = QGroupBox("Результаты")
         stats_layout = QVBoxLayout(stats_group)
         
-        self.lbl_results = QLabel("Загрузите изображение и выделите область.")
-        self.lbl_results.setStyleSheet("font-size: 14px; padding: 5px;")
-        self.lbl_results.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.lbl_results.setWordWrap(True)
-        stats_layout.addWidget(self.lbl_results)
+        self.stats_tabs = QTabWidget()
+        stats_layout.addWidget(self.stats_tabs)
         
-        self.btn_copy = QPushButton("📋 Копировать команду")
+        # RGB Tab
+        self.lbl_rgb = QLabel("Загрузите изображение...")
+        self.lbl_rgb.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.lbl_rgb.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.stats_tabs.addTab(self.lbl_rgb, "RGB")
+        
+        # HSV Tab
+        self.lbl_hsv = QLabel("Данные HSV")
+        self.lbl_hsv.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.lbl_hsv.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.stats_tabs.addTab(self.lbl_hsv, "HSV")
+
+        # LAB Tab
+        self.lbl_lab = QLabel("Данные LAB")
+        self.lbl_lab.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.lbl_lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.stats_tabs.addTab(self.lbl_lab, "LAB")
+
+        stats_buttons_layout = QHBoxLayout()
+
+        self.btn_copy = QPushButton("📋 Копировать RGB")
         self.btn_copy.clicked.connect(self.copy_command)
         self.btn_copy.setEnabled(False)
-        stats_layout.addWidget(self.btn_copy)
+        stats_buttons_layout.addWidget(self.btn_copy)
+
+        self.btn_csv = QPushButton("💾 Сохранить в CSV")
+        self.btn_csv.clicked.connect(self.export_csv)
+        self.btn_csv.setEnabled(False)
+        stats_buttons_layout.addWidget(self.btn_csv)
+        
+        stats_layout.addLayout(stats_buttons_layout)
         
         right_layout.addWidget(stats_group)
 
@@ -137,12 +177,20 @@ class MainWindow(QMainWindow):
         
         right_layout.addWidget(overlay_group)
 
-        # --- Histogram Group ---
-        hist_group = QGroupBox("Гистограмма RGB")
-        hist_layout = QVBoxLayout(hist_group)
+        # --- Visualization Group (Histogram + Line Profile) ---
+        viz_group = QGroupBox("Графики")
+        viz_layout = QVBoxLayout(viz_group)
+        
+        self.viz_tabs = QTabWidget()
+        
         self.histogram = HistogramWidget()
-        hist_layout.addWidget(self.histogram)
-        right_layout.addWidget(hist_group)
+        self.viz_tabs.addTab(self.histogram, "Гистограмма")
+        
+        self.line_profile = LineProfileWidget()
+        self.viz_tabs.addTab(self.line_profile, "Профиль линии")
+        
+        viz_layout.addWidget(self.viz_tabs)
+        right_layout.addWidget(viz_group)
 
         # --- Grid Group ---
         grid_group = QGroupBox("Сетка")
@@ -183,7 +231,7 @@ class MainWindow(QMainWindow):
         self.last_calculated_params = None
 
     def open_image(self):
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Открыть изображения", self.last_dir, "Images (*.png *.jpg *.jpeg *.bmp *.tif)")
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Открыть изображения", self.last_dir, "Изображения (*.png *.jpg *.jpeg *.bmp *.tif)")
         if file_names:
             self.last_dir = os.path.dirname(file_names[0])
             self.settings.setValue("last_dir", self.last_dir)
@@ -200,7 +248,9 @@ class MainWindow(QMainWindow):
         self.image_paths = []
         self.image_list.clear()
         self.viewer.scene.clear()
-        self.lbl_results.setText("Список очищен.")
+        self.lbl_rgb.setText("Список очищен.")
+        self.lbl_hsv.setText("")
+        self.lbl_lab.setText("")
         self.table.setRowCount(0)
         self.histogram.set_data([], [], [])
         self.current_stats = None
@@ -210,7 +260,7 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self.image_paths):
             path = self.image_paths[index]
             self.viewer.load_image(path)
-            self.lbl_results.setText(f"Загружено: {os.path.basename(path)}")
+            self.lbl_rgb.setText(f"Загружено: {os.path.basename(path)}")
             
             # Auto-calculate stats if we have a rect
             if self.viewer.get_selection_rect():
@@ -248,20 +298,42 @@ class MainWindow(QMainWindow):
         if self.cb_grid.isChecked():
             self.viewer.set_grid(True, value)
 
+    def set_tool(self, mode):
+        self.btn_tool_rect.setChecked(mode == 'rect')
+        self.btn_tool_line.setChecked(mode == 'line')
+        self.viewer.set_tool(mode)
+        
+        # Switch tabs to match useful info
+        if mode == 'rect':
+            self.viz_tabs.setCurrentWidget(self.histogram)
+            self.calculate_stats()
+        else:
+            self.viz_tabs.setCurrentWidget(self.line_profile)
+            self.calculate_profile()
+
+    def on_item_changed(self):
+        if self.viewer.current_tool == 'rect':
+            self.calculate_stats()
+        elif self.viewer.current_tool == 'line':
+            self.calculate_profile()
+
+    def calculate_profile(self):
+        line_coords = self.viewer.get_line_coords()
+        if not line_coords:
+            self.line_profile.set_data([], [], [])
+            return
+
+        # Optimization check could be added here similar to stats
+
+        profile_data = calculate_line_profile(self.viewer.image_path, line_coords)
+        if profile_data:
+            self.line_profile.set_data(profile_data['r'], profile_data['g'], profile_data['b'])
+    
     def calculate_stats(self, rect=None):
-        if rect is None or isinstance(rect, bool): # Handle direct call or click event if no rect passed (though signal passes rect)
-            # Check if arg is rect or just a connector triggered bool
-            # If triggered from button, rect is False.
+        if rect is None or isinstance(rect, bool): 
             rect = self.viewer.get_selection_rect()
         
-        # If rect came from signal (QRectF), convert to tuple
-        if hasattr(rect, 'getRect'): # It is a QRectF
-             # Convert QRectF to x, y, w, h
-             # BUT wait, calculate_stats expects int tuple relative to image?
-             # viewer.get_selection_rect() returns (x, y, w, h) ints.
-             # viewer.on_grid_click emits cell_rect which is QRectF in scene coords (which matches image coords)
-             
-             # Let's align.
+        if hasattr(rect, 'getRect'): 
              r = rect
              # Important: We need to make sure we treat it as relative to image 0,0
              # which our scene assumes since we add Pixmap at 0,0.
@@ -269,8 +341,9 @@ class MainWindow(QMainWindow):
              rect = new_rect
 
         if not rect:
-            self.lbl_results.setText("Ошибка: Не выделена область или файл не найден.")
+            self.lbl_rgb.setText("Ошибка: Не выделена область или файл не найден.")
             self.btn_copy.setEnabled(False)
+            self.btn_csv.setEnabled(False)
             return
 
         # Optimization: Check if we are recalculating the same thing
@@ -289,9 +362,6 @@ class MainWindow(QMainWindow):
             overlay_path, overlay_pos = overlay_info
             
             # Calculate rect relative to overlay
-            # rect is (x, y, w, h) in base image coordinates (which matches scene coords for base image at 0,0)
-            # overlay is at overlay_pos
-            
             ox = int(rect[0] - overlay_pos.x())
             oy = int(rect[1] - overlay_pos.y())
             ow = rect[2]
@@ -312,10 +382,11 @@ class MainWindow(QMainWindow):
             
             self.last_command = f"R,B {norm_r:.2f},{norm_b:.2f}"
             
+            # RGB Text
             res_text = (
                 f"<b>Средний RGB:</b> R={r:.1f}, G={g:.1f}, B={b:.1f}<br>"
                 f"<b>Медиана:</b> R={stats['median_r']:.1f}, G={stats['median_g']:.1f}, B={stats['median_b']:.1f}<br>"
-                f"<b>StdDev (Шум):</b> R={stats['std_r']:.2f}, G={stats['std_g']:.2f}, B={stats['std_b']:.2f}<br>"
+                f"<b>Разброс (Шум):</b> R={stats['std_r']:.2f}, G={stats['std_g']:.2f}, B={stats['std_b']:.2f}<br>"
                 f"<b>Нормализация (G=1.0):</b> R={norm_r:.4f}, G={norm_g:.4f}, B={norm_b:.4f}<br>"
                 f"<div style='font-size: 16px; color: #4ec9b0; margin-top: 5px;'><b>{self.last_command}</b></div><br>"
                 f"<b>Всего пикселей:</b> {stats['count']}<br>"
@@ -334,13 +405,35 @@ class MainWindow(QMainWindow):
                 res_text += (
                     f"<br><hr><br>"
                     f"<b>Наложение RGB:</b> R={or_:.1f}, G={og:.1f}, B={ob:.1f}<br>"
-                    f"<b>Delta (Base - Overlay):</b> <span style='color: {'#ff6b6b' if dr < 0 else '#6bff6b'}'>R={dr:+.1f}</span>, "
+                    f"<b>Разница (База - Наложение):</b> <span style='color: {'#ff6b6b' if dr < 0 else '#6bff6b'}'>R={dr:+.1f}</span>, "
                     f"<span style='color: {'#ff6b6b' if dg < 0 else '#6bff6b'}'>G={dg:+.1f}</span>, "
                     f"<span style='color: {'#ff6b6b' if db < 0 else '#6bff6b'}'>B={db:+.1f}</span>"
                 )
+            
+            self.lbl_rgb.setText(res_text)
 
-            self.lbl_results.setText(res_text)
+            # HSV Text
+            hsv = stats.get('hsv', {})
+            hsv_text = (
+                f"<b>Hue (Тон):</b> {hsv.get('avg_h', 0):.1f} (Сред.), {hsv.get('median_h', 0):.1f} (Мед.)<br>"
+                f"<b>Saturation (Насыщ.):</b> {hsv.get('avg_s', 0):.1f} (Сред.), {hsv.get('median_s', 0):.1f} (Мед.)<br>"
+                f"<b>Value (Яркость):</b> {hsv.get('avg_v', 0):.1f} (Сред.), {hsv.get('median_v', 0):.1f} (Мед.)<br><br>"
+                f"<b>Разброс:</b> H={hsv.get('std_h', 0):.2f}, S={hsv.get('std_s', 0):.2f}, V={hsv.get('std_v', 0):.2f}"
+            )
+            self.lbl_hsv.setText(hsv_text)
+
+            # LAB Text
+            lab = stats.get('lab', {})
+            lab_text = (
+                f"<b>L (Светлота):</b> {lab.get('avg_l', 0):.1f} ± {lab.get('std_l', 0):.2f}<br>"
+                f"<b>A (Зеленый-Красный):</b> {lab.get('avg_a', 0):.1f} ± {lab.get('std_a', 0):.2f}<br>"
+                f"<b>B (Синий-Желтый):</b> {lab.get('avg_b', 0):.1f} ± {lab.get('std_b', 0):.2f}<br><br>"
+                f"<i>LAB используется для более точного сравнения цветов, так как он ближе к человеческому восприятию.</i>"
+            )
+            self.lbl_lab.setText(lab_text)
+
             self.btn_copy.setEnabled(True)
+            self.btn_csv.setEnabled(True)
 
             # Update Histogram (Base only for now, or maybe combined?)
             self.histogram.set_data(*stats['hist'])
@@ -355,7 +448,7 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(count_shown)
             
             if len(unique_colors) > limit:
-                 self.lbl_results.setText(res_text + f"<br><span style='color: orange'>Показано топ {limit} из {len(unique_colors)} цветов</span>")
+                 self.lbl_rgb.setText(res_text + f"<br><span style='color: orange'>Показано топ {limit} из {len(unique_colors)} цветов</span>")
             
             for i in range(self.table.rowCount()):
                 color = unique_colors[i]
@@ -371,8 +464,10 @@ class MainWindow(QMainWindow):
                 color_item.setBackground(QColor(int(color[0]), int(color[1]), int(color[2])))
                 self.table.setItem(i, 4, color_item)
         else:
-            self.lbl_results.setText("Ошибка при обработке изображения.")
+            self.lbl_rgb.setText("Ошибка при обработке изображения.")
             self.btn_copy.setEnabled(False)
+            self.btn_csv.setEnabled(False)
+
 
     def copy_command(self):
         if self.last_command:
@@ -385,21 +480,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала выполните расчет статистики.")
             return
 
-        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить CSV", self.last_dir, "CSV Files (*.csv)")
+        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить CSV", self.last_dir, "CSV файлы (*.csv)")
         if file_name:
             try:
                 with open(file_name, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     
                     # Header stats
-                    writer.writerow(["Statistic", "R", "G", "B"])
-                    writer.writerow(["Mean", self.current_stats['r'], self.current_stats['g'], self.current_stats['b']])
-                    writer.writerow(["Median", self.current_stats['median_r'], self.current_stats['median_g'], self.current_stats['median_b']])
-                    writer.writerow(["StdDev", self.current_stats['std_r'], self.current_stats['std_g'], self.current_stats['std_b']])
+                    writer.writerow(["Статистика", "R", "G", "B"])
+                    writer.writerow(["Среднее", self.current_stats['r'], self.current_stats['g'], self.current_stats['b']])
+                    writer.writerow(["Медиана", self.current_stats['median_r'], self.current_stats['median_g'], self.current_stats['median_b']])
+                    writer.writerow(["СтдОткл", self.current_stats['std_r'], self.current_stats['std_g'], self.current_stats['std_b']])
                     writer.writerow([])
                     
                     # Colors
-                    writer.writerow(["R", "G", "B", "Count"])
+                    writer.writerow(["R", "G", "B", "Количество"])
                     unique_colors = self.current_stats['unique_colors']
                     counts = self.current_stats['counts']
                     for i in range(len(unique_colors)):

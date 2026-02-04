@@ -50,4 +50,30 @@ QLabel {
 QSplitter::handle {
     background-color: #444;
 }
+QPushButton:checked {
+    background-color: #264f78;
+    border: 1px solid #1c3a59;
+}
+QTabWidget::pane {
+    border: 1px solid #444;
+    background-color: #1e1e1e;
+}
+QTabBar::tab {
+    background: #3c3f41;
+    color: #b0b0b0;
+    border: 1px solid #555;
+    padding: 6px 12px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+    background: #505355;
+    color: #fff;
+    border-bottom: 2px solid #264f78;
+}
+QTabBar::tab:hover {
+    background: #484b4d;
+    color: #fff;
+}
 """
