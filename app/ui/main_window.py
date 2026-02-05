@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QSettings
 from app.ui.styles import DARK_STYLESHEET
 from app.ui.widgets import HistogramWidget, LineProfileWidget
 from app.ui.viewer import ImageViewer
-from app.core.processor import calculate_image_stats, calculate_line_profile
+from app.core.processor import calculate_image_stats, calculate_line_profile, calculate_grid_stats, create_annotated_image
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("Файл")
         
-        export_action = QAction("Экспорт в CSV", self)
+        export_action = QAction("Экспорт результатов", self)
         export_action.triggered.connect(self.export_csv)
         file_menu.addAction(export_action)
 
@@ -134,12 +134,6 @@ class MainWindow(QMainWindow):
         self.lbl_hsv.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.stats_tabs.addTab(self.lbl_hsv, "HSV")
 
-        # LAB Tab
-        self.lbl_lab = QLabel("Данные LAB")
-        self.lbl_lab.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.lbl_lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.stats_tabs.addTab(self.lbl_lab, "LAB")
-
         stats_buttons_layout = QHBoxLayout()
 
         self.btn_copy = QPushButton("📋 Копировать RGB")
@@ -147,7 +141,7 @@ class MainWindow(QMainWindow):
         self.btn_copy.setEnabled(False)
         stats_buttons_layout.addWidget(self.btn_copy)
 
-        self.btn_csv = QPushButton("💾 Сохранить в CSV")
+        self.btn_csv = QPushButton("💾 Сохранить в Excel")
         self.btn_csv.clicked.connect(self.export_csv)
         self.btn_csv.setEnabled(False)
         stats_buttons_layout.addWidget(self.btn_csv)
@@ -208,6 +202,10 @@ class MainWindow(QMainWindow):
         self.sb_cell_size.valueChanged.connect(self.update_grid_size)
         grid_controls.addWidget(self.sb_cell_size)
         grid_layout.addLayout(grid_controls)
+
+        self.btn_export_grid = QPushButton("💾 Экспорт сетки в Excel")
+        self.btn_export_grid.clicked.connect(self.export_grid_stats)
+        grid_layout.addWidget(self.btn_export_grid)
         
         right_layout.addWidget(grid_group)
 
@@ -422,16 +420,6 @@ class MainWindow(QMainWindow):
             )
             self.lbl_hsv.setText(hsv_text)
 
-            # LAB Text
-            lab = stats.get('lab', {})
-            lab_text = (
-                f"<b>L (Светлота):</b> {lab.get('avg_l', 0):.1f} ± {lab.get('std_l', 0):.2f}<br>"
-                f"<b>A (Зеленый-Красный):</b> {lab.get('avg_a', 0):.1f} ± {lab.get('std_a', 0):.2f}<br>"
-                f"<b>B (Синий-Желтый):</b> {lab.get('avg_b', 0):.1f} ± {lab.get('std_b', 0):.2f}<br><br>"
-                f"<i>LAB используется для более точного сравнения цветов, так как он ближе к человеческому восприятию.</i>"
-            )
-            self.lbl_lab.setText(lab_text)
-
             self.btn_copy.setEnabled(True)
             self.btn_csv.setEnabled(True)
 
@@ -480,27 +468,205 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала выполните расчет статистики.")
             return
 
-        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить CSV", self.last_dir, "CSV файлы (*.csv)")
+        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить результаты", self.last_dir, "Excel файлы (*.xlsx);;CSV файлы (*.csv)")
         if file_name:
             try:
-                with open(file_name, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    
-                    # Header stats
-                    writer.writerow(["Статистика", "R", "G", "B"])
-                    writer.writerow(["Среднее", self.current_stats['r'], self.current_stats['g'], self.current_stats['b']])
-                    writer.writerow(["Медиана", self.current_stats['median_r'], self.current_stats['median_g'], self.current_stats['median_b']])
-                    writer.writerow(["СтдОткл", self.current_stats['std_r'], self.current_stats['std_g'], self.current_stats['std_b']])
-                    writer.writerow([])
-                    
-                    # Colors
-                    writer.writerow(["R", "G", "B", "Количество"])
-                    unique_colors = self.current_stats['unique_colors']
-                    counts = self.current_stats['counts']
-                    for i in range(len(unique_colors)):
-                        c = unique_colors[i]
-                        writer.writerow([c[0], c[1], c[2], counts[i]])
+                if file_name.endswith('.xlsx'):
+                     import xlsxwriter
+                     
+                     workbook = xlsxwriter.Workbook(file_name)
+                     worksheet = workbook.add_worksheet()
+                     
+                     # Formats
+                     header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
+                     num_format = workbook.add_format({'num_format': '0.00'})
+                     bold_format = workbook.add_format({'bold': True})
+                     
+                     # Writing Stats Table
+                     # Header
+                     worksheet.write(0, 0, "Статистика", header_format)
+                     worksheet.write(0, 1, "R", header_format)
+                     worksheet.write(0, 2, "G", header_format)
+                     worksheet.write(0, 3, "B", header_format)
+                     
+                     # Data Rows
+                     stats = [
+                         ("Среднее", self.current_stats['r'], self.current_stats['g'], self.current_stats['b']),
+                         ("Медиана", self.current_stats['median_r'], self.current_stats['median_g'], self.current_stats['median_b']),
+                         ("СтдОткл", self.current_stats['std_r'], self.current_stats['std_g'], self.current_stats['std_b'])
+                     ]
+                     
+                     for i, (label, r, g, b) in enumerate(stats, 1):
+                         worksheet.write(i, 0, label, bold_format)
+                         worksheet.write_number(i, 1, r, num_format)
+                         worksheet.write_number(i, 2, g, num_format)
+                         worksheet.write_number(i, 3, b, num_format)
+                         
+                     # Colors Table
+                     start_row = 6
+                     worksheet.write(start_row, 0, "R", header_format)
+                     worksheet.write(start_row, 1, "G", header_format)
+                     worksheet.write(start_row, 2, "B", header_format)
+                     worksheet.write(start_row, 3, "Количество", header_format)
+                     
+                     unique_colors = self.current_stats['unique_colors']
+                     counts = self.current_stats['counts']
+                     
+                     for i in range(len(unique_colors)):
+                         c = unique_colors[i]
+                         row = start_row + 1 + i
+                         worksheet.write(row, 0, c[0])
+                         worksheet.write(row, 1, c[1])
+                         worksheet.write(row, 2, c[2])
+                         worksheet.write(row, 3, counts[i])
+                     
+                     # Auto-width
+                     worksheet.set_column(0, 3, 15)
+                     
+                     workbook.close()
+                else: 
+                    # CSV Fallback
+                    with open(file_name, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        
+                        # Header stats
+                        writer.writerow(["Статистика", "R", "G", "B"])
+                        writer.writerow(["Среднее", self.current_stats['r'], self.current_stats['g'], self.current_stats['b']])
+                        writer.writerow(["Медиана", self.current_stats['median_r'], self.current_stats['median_g'], self.current_stats['median_b']])
+                        writer.writerow(["СтдОткл", self.current_stats['std_r'], self.current_stats['std_g'], self.current_stats['std_b']])
+                        writer.writerow([])
+                        
+                        # Colors
+                        writer.writerow(["R", "G", "B", "Количество"])
+                        unique_colors = self.current_stats['unique_colors']
+                        counts = self.current_stats['counts']
+                        for i in range(len(unique_colors)):
+                            c = unique_colors[i]
+                            writer.writerow([c[0], c[1], c[2], counts[i]])
                         
                 QMessageBox.information(self, "Успех", f"Данные сохранены в {file_name}")
+            except ImportError:
+                 QMessageBox.critical(self, "Ошибка", "Установите xlsxwriter: pip install xlsxwriter")
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{e}")
+
+    def export_grid_stats(self):
+        if not self.viewer.image_path:
+            QMessageBox.warning(self, "Ошибка", "Изображение не загружено.")
+            return
+
+        if not self.cb_grid.isChecked():
+            # Ask if user wants to enable grid or proceed with current settings?
+            pass
+
+        cell_size = self.sb_cell_size.value()
+        
+        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить Сетку", self.last_dir, "Excel файлы (*.xlsx);;CSV файлы (*.csv)")
+        if not file_name:
+            return
+
+        # Show wait cursor
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            results = calculate_grid_stats(self.viewer.image_path, cell_size)
+            
+            if not results:
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(self, "Ошибка", "Не удалось рассчитать данные сетки.")
+                return
+
+            if file_name.endswith('.xlsx'):
+                import xlsxwriter
+                
+                workbook = xlsxwriter.Workbook(file_name)
+                worksheet = workbook.add_worksheet()
+                
+                # Formats
+                header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
+                num_format = workbook.add_format({'num_format': '0.00'})
+                
+                headers = ["X", "Y", "Среднее R", "Среднее G", "Среднее B", "Norm R (G=1)", "Norm B (G=1)", "Стд.Откл R", "Стд.Откл G", "Стд.Откл B"]
+                
+                # Write Headers
+                for col_num, header in enumerate(headers):
+                    worksheet.write(0, col_num, header, header_format)
+                
+                # Write Data
+                for row_num, r in enumerate(results, 1):
+                    avg_g = r['avg_g']
+                    norm_r = r['avg_r'] / avg_g if avg_g != 0 else 0
+                    norm_b = r['avg_b'] / avg_g if avg_g != 0 else 0
+                    
+                    data_row = [
+                        r['x'], r['y'],
+                        r['avg_r'], r['avg_g'], r['avg_b'],
+                        norm_r, norm_b,
+                        r['std_r'], r['std_g'], r['std_b']
+                    ]
+                    
+                    for col_num, data in enumerate(data_row):
+                        # Apply number format to floats (columns 2 to 9)
+                        if 2 <= col_num <= 9:
+                            worksheet.write_number(row_num, col_num, data, num_format)
+                        else:
+                            worksheet.write(row_num, col_num, data)
+
+                # Auto-fit columns
+                for i, header in enumerate(headers):
+                    worksheet.set_column(i, i, max(len(header) + 2, 10)) # Simple auto-width based on header + padding
+                
+                # Create and insert annotated image
+                try:
+                     import tempfile
+                     temp_dir = tempfile.gettempdir()
+                     temp_img_path = os.path.join(temp_dir, "grid_map_temp.png")
+                     
+                     if create_annotated_image(self.viewer.image_path, results, cell_size, temp_img_path):
+                         map_sheet = workbook.add_worksheet("Карта")
+                         map_sheet.insert_image('A1', temp_img_path)
+                except Exception as img_err:
+                     print(f"Failed to add image map: {img_err}")
+                
+                workbook.close()
+
+                # Clean up temp file
+                if os.path.exists(temp_img_path):
+                    try:
+                        os.remove(temp_img_path)
+                    except: pass
+
+            else:
+                # CSV Fallback
+                with open(file_name, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f, delimiter=';') # Use semicolon for Excel in many regions
+                    
+                    # Headers
+                    writer.writerow(["X", "Y", "Среднее R", "Среднее G", "Среднее B", "Norm R (G=1)", "Norm B (G=1)", "Стд.Откл R", "Стд.Откл G", "Стд.Откл B"])
+                    
+                    for r in results:
+                        # Calculate normalized values
+                        avg_g = r['avg_g']
+                        norm_r = r['avg_r'] / avg_g if avg_g != 0 else 0
+                        norm_b = r['avg_b'] / avg_g if avg_g != 0 else 0
+
+                        writer.writerow([
+                            r['x'], r['y'],
+                            f"{r['avg_r']:.2f}".replace('.', ','), 
+                            f"{r['avg_g']:.2f}".replace('.', ','), 
+                            f"{r['avg_b']:.2f}".replace('.', ','),
+                            f"{norm_r:.2f}".replace('.', ','),
+                            f"{norm_b:.2f}".replace('.', ','),
+                            f"{r['std_r']:.2f}".replace('.', ','), 
+                            f"{r['std_g']:.2f}".replace('.', ','), 
+                            f"{r['std_b']:.2f}".replace('.', ',')
+                        ])
+            
+            QApplication.restoreOverrideCursor()
+            QMessageBox.information(self, "Успех", f"Данные сетки ({len(results)} ячеек) сохранены в {file_name}")
+            
+        except ImportError:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Ошибка", "Для сохранения в Excel требуется библиотека xlsxwriter.\nУстановите её командой: pip install xlsxwriter")
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при экспорте:\n{e}")

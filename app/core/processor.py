@@ -1,6 +1,7 @@
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import cv2
+import os
 
 def calculate_image_stats(image_path, selection_rect):
     """
@@ -144,3 +145,133 @@ def calculate_line_profile(image_path, line_coords):
     except Exception as e:
         print(f"Error calculating profile: {e}")
         return None
+
+def calculate_grid_stats(image_path, cell_size):
+    """
+    Calculates statistics for every cell in a grid over the image.
+    Returns a list of dictionaries with coordinates and stats.
+    """
+    if not image_path or cell_size <= 0:
+        return []
+
+    results = []
+    
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert('RGB')
+            img_arr = np.array(img)
+            
+            h, w, _ = img_arr.shape
+            
+            # Iterate through grid
+            for y in range(0, h, cell_size):
+                for x in range(0, w, cell_size):
+                    # Define cell boundaries
+                    x2 = min(x + cell_size, w)
+                    y2 = min(y + cell_size, h)
+                    
+                    # Skip partial cells (if not full size)
+                    if (x2 - x) != cell_size or (y2 - y) != cell_size:
+                        continue
+                    
+                    # Extract crop
+                    crop = img_arr[y:y2, x:x2]
+                    
+                    if crop.size == 0:
+                        continue
+                        
+                    # Calculate Stats (Simplified for batch processing)
+                    # We focus on what's requested: "coordinate and data"
+                    # Average RGB is the most useful "data"
+                    
+                    avg_r = np.mean(crop[:, :, 0])
+                    avg_g = np.mean(crop[:, :, 1])
+                    avg_b = np.mean(crop[:, :, 2])
+                    
+                    # Determine predominant color or other metric?
+                    # For now just Averages and Standard Deviations
+                    
+                    results.append({
+                        'x': x,
+                        'y': y,
+                        'avg_r': avg_r,
+                        'avg_g': avg_g,
+                        'avg_b': avg_b,
+                        'std_r': np.std(crop[:, :, 0]),
+                        'std_g': np.std(crop[:, :, 1]),
+                        'std_b': np.std(crop[:, :, 2])
+                    })
+                    
+        return results
+            
+    except Exception as e:
+        print(f"Error calculating grid stats: {e}")
+        return []
+
+def create_annotated_image(image_path, results, cell_size, output_path):
+    """
+    Creates a copy of the image with grid and coordinates drawn on it.
+    """
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert('RGB')
+            draw = ImageDraw.Draw(img)
+            
+            # Try to load a font
+            try:
+                # Adjust font size based on cell size - make it smaller
+                font_size = max(8, int(cell_size / 6))
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except IOError:
+                font = ImageFont.load_default()
+            
+            img_w, img_h = img.size
+
+            for r in results:
+                x, y = r['x'], r['y']
+                
+                # Calculate dimensions dynamically since we removed them from results
+                w = min(cell_size, img_w - x)
+                h = min(cell_size, img_h - y)
+                
+                # Draw rect
+                draw.rectangle([x, y, x+w, y+h], outline="cyan", width=2)
+                
+                # Draw text split in two lines to save width
+                text_x = str(x)
+                text_y = str(y)
+                
+                # Helper to get size
+                def get_size(txt):
+                    try:
+                        bbox = draw.textbbox((0, 0), txt, font=font)
+                        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+                    except AttributeError:
+                        return draw.textsize(txt, font=font)
+
+                w_x, h_x = get_size(text_x)
+                w_y, h_y = get_size(text_y)
+                
+                total_h = h_x + h_y + 2 # 2px spacing
+
+                # Center X coordinate
+                tx_x = x + (w - w_x) / 2
+                ty_x = y + (h - total_h) / 2
+                
+                # Center Y coordinate below X
+                tx_y = x + (w - w_y) / 2
+                ty_y = ty_x + h_x + 2
+                
+                # Draw X
+                draw.text((tx_x+1, ty_x+1), text_x, font=font, fill="black")
+                draw.text((tx_x, ty_x), text_x, font=font, fill="yellow")
+
+                # Draw Y
+                draw.text((tx_y+1, ty_y+1), text_y, font=font, fill="black")
+                draw.text((tx_y, ty_y), text_y, font=font, fill="yellow")
+                
+            img.save(output_path)
+            return True
+    except Exception as e:
+        print(f"Error creating annotated image: {e}")
+        return False

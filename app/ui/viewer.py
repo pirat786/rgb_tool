@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QObject, QLineF
 
 class ResizableRectItem(QGraphicsRectItem):
     # Target size in screen pixels
-    screen_handle_size = 14 
+    screen_handle_size = 9
 
     def __init__(self, rect=QRectF(0, 0, 100, 100), parent=None):
         super().__init__(rect, parent)
@@ -22,6 +22,20 @@ class ResizableRectItem(QGraphicsRectItem):
         self.current_handle = None
         self.mouse_press_pos = None
         self.mouse_press_rect = None
+        self.is_interactive = True
+
+    def set_interactive_mode(self, enabled):
+        self.is_interactive = enabled
+        # Update flags
+        flags = self.flags()
+        if enabled:
+            flags |= QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable
+            flags |= QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable
+        else:
+            flags &= ~QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable
+            flags &= ~QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable
+        self.setFlags(flags)
+        self.update() # Redraw
 
     def get_handle_size(self):
         """Calculate handle size in scene coordinates to maintain constant screen size"""
@@ -40,6 +54,11 @@ class ResizableRectItem(QGraphicsRectItem):
         return self.screen_handle_size / scale
 
     def hoverMoveEvent(self, event):
+        if not self.is_interactive:
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            super().hoverMoveEvent(event)
+            return
+
         pos = event.pos()
         handle = self.get_handle_at(pos)
         cursor = Qt.CursorShape.ArrowCursor
@@ -61,6 +80,9 @@ class ResizableRectItem(QGraphicsRectItem):
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event):
+        if not self.is_interactive:
+            return # Ignore interaction
+
         self.current_handle = self.get_handle_at(event.pos())
         if self.current_handle:
             self.mouse_press_pos = event.pos()
@@ -70,6 +92,9 @@ class ResizableRectItem(QGraphicsRectItem):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if not self.is_interactive:
+            return
+
         if self.current_handle:
             rect = self.mouse_press_rect
             pos = event.pos()
@@ -88,8 +113,8 @@ class ResizableRectItem(QGraphicsRectItem):
             if 'bottom' in self.current_handle:
                 new_h += diff.y()
 
-            if new_w < 30: new_w = 30
-            if new_h < 30: new_h = 30
+            if new_w < 5: new_w = 5 # Reduced min size
+            if new_h < 5: new_h = 5
             
             self.setRect(new_x, new_y, new_w, new_h)
         else:
@@ -100,6 +125,8 @@ class ResizableRectItem(QGraphicsRectItem):
         super().mouseReleaseEvent(event)
 
     def get_handle_at(self, pos):
+        if not self.is_interactive: return None
+
         r = self.rect()
         x, y, w, h = r.x(), r.y(), r.width(), r.height()
         s = self.get_handle_size() # Dynamic size
@@ -121,6 +148,9 @@ class ResizableRectItem(QGraphicsRectItem):
     def paint(self, painter, option, widget=None):
         super().paint(painter, option, widget)
         
+        if not self.is_interactive:
+            return
+
         # Draw handles
         pen = QPen(Qt.GlobalColor.blue, 1)
         pen.setCosmetic(True)
@@ -475,6 +505,9 @@ class ImageViewer(QGraphicsView):
         self.rect_item.setZValue(100) 
         self.scene.addItem(self.rect_item)
         
+        # Apply interactive state based on current grid state
+        self.rect_item.set_interactive_mode(not self.is_grid_enabled)
+        
         # Restore or create line item
         if current_line:
             self.line_item = LineItem(current_line)
@@ -501,6 +534,15 @@ class ImageViewer(QGraphicsView):
         if cell_size:
             self.grid_cell_size = cell_size
         self.refresh_grid()
+        
+        # Toggle interactive mode for rect item
+        # If grid is enabled -> disable manual resizing of the rect
+        # If grid is disabled -> enable manual resizing
+        if self.rect_item:
+            self.rect_item.set_interactive_mode(not enabled)
+            
+            # If disabling grid, restore default rect style if needed? 
+            # No, keep it as is, just enable handles.
 
     def refresh_grid(self):
         if self.grid_item:
