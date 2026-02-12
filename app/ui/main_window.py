@@ -25,6 +25,8 @@ class MainWindow(QMainWindow):
         self.current_stats = None
         self.image_paths = []
         self.current_image_index = -1
+        
+        self.setAcceptDrops(True)
 
         # Set Window Icon
         icon_path = self.get_resource_path(os.path.join("assets", "image.ico"))
@@ -107,6 +109,7 @@ class MainWindow(QMainWindow):
         self.viewer = ImageViewer()
         self.viewer.grid_clicked.connect(self.calculate_stats) 
         self.viewer.item_changed.connect(self.on_item_changed)
+        self.viewer.files_dropped.connect(self.load_images)
         splitter.addWidget(self.viewer)
 
         # Right Panel (Stats + Table)
@@ -231,16 +234,41 @@ class MainWindow(QMainWindow):
     def open_image(self):
         file_names, _ = QFileDialog.getOpenFileNames(self, "Открыть изображения", self.last_dir, "Изображения (*.png *.jpg *.jpeg *.bmp *.tif)")
         if file_names:
-            self.last_dir = os.path.dirname(file_names[0])
-            self.settings.setValue("last_dir", self.last_dir)
+            self.load_images(file_names)
             
-            for f in file_names:
-                if f not in self.image_paths:
-                    self.image_paths.append(f)
-                    self.image_list.addItem(os.path.basename(f))
+    def load_images(self, paths):
+        """Helper to load list of image paths"""
+        if not paths:
+            return
+
+        # Update last dir based on first file
+        self.last_dir = os.path.dirname(paths[0])
+        self.settings.setValue("last_dir", self.last_dir)
+        
+        added_any = False
+        for f in paths:
+            if f not in self.image_paths:
+                self.image_paths.append(f)
+                self.image_list.addItem(os.path.basename(f))
+                added_any = True
+        
+        # Select first one if list was empty or select new one?
+        # Logic: if nothing selected, select 0.
+        if self.image_list.count() > 0 and self.image_list.currentRow() == -1:
+            self.image_list.setCurrentRow(0)
             
-            if self.image_list.count() > 0 and self.image_list.currentRow() == -1:
-                self.image_list.setCurrentRow(0)
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))]
+        
+        if image_files:
+            self.load_images(image_files)
 
     def clear_images(self):
         self.image_paths = []
@@ -248,8 +276,6 @@ class MainWindow(QMainWindow):
         self.viewer.scene.clear()
         self.lbl_rgb.setText("Список очищен.")
         self.lbl_hsv.setText("")
-        self.lbl_lab.setText("")
-        self.table.setRowCount(0)
         self.histogram.set_data([], [], [])
         self.current_stats = None
         self.last_calculated_params = None

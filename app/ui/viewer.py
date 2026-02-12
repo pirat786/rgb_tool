@@ -336,6 +336,7 @@ class GridOverlayItem(QGraphicsItem):
 class ImageViewer(QGraphicsView):
     grid_clicked = pyqtSignal(QRectF) 
     item_changed = pyqtSignal() # Signal when roi changes (release)
+    files_dropped = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -365,6 +366,8 @@ class ImageViewer(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setBackgroundBrush(QBrush(QColor("#222")))
+        
+        self.setAcceptDrops(True)
 
     def set_tool(self, tool_mode):
         self.current_tool = tool_mode
@@ -644,3 +647,16 @@ class ImageViewer(QGraphicsView):
         h = int(rect_rect.height())
         
         return (x, y, w, h)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))]
+        
+        if image_files:
+            self.files_dropped.emit(image_files)
