@@ -11,7 +11,8 @@ from PyQt6.QtCore import Qt, QSettings
 from app.ui.styles import DARK_STYLESHEET
 from app.ui.widgets import HistogramWidget, LineProfileWidget
 from app.ui.viewer import ImageViewer
-from app.core.processor import calculate_image_stats, calculate_line_profile, calculate_grid_stats, create_annotated_image
+from app.core.processor import (calculate_image_stats, calculate_line_profile, calculate_grid_stats, 
+                                create_annotated_image, get_pixel_info)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -93,6 +94,11 @@ class MainWindow(QMainWindow):
         self.btn_tool_line.setCheckable(True)
         self.btn_tool_line.clicked.connect(lambda: self.set_tool('line'))
         controls_layout.addWidget(self.btn_tool_line)
+
+        self.btn_tool_picker = QPushButton("📍 Пипетка")
+        self.btn_tool_picker.setCheckable(True)
+        self.btn_tool_picker.clicked.connect(lambda: self.set_tool('picker'))
+        controls_layout.addWidget(self.btn_tool_picker)
         
         main_layout.addLayout(controls_layout)
 
@@ -107,9 +113,11 @@ class MainWindow(QMainWindow):
 
         # Viewer
         self.viewer = ImageViewer()
+        self.viewer = ImageViewer()
         self.viewer.grid_clicked.connect(self.calculate_stats) 
         self.viewer.item_changed.connect(self.on_item_changed)
         self.viewer.files_dropped.connect(self.load_images)
+        self.viewer.pixel_clicked.connect(self.on_pixel_clicked)
         splitter.addWidget(self.viewer)
 
         # Right Panel (Stats + Table)
@@ -273,7 +281,7 @@ class MainWindow(QMainWindow):
     def clear_images(self):
         self.image_paths = []
         self.image_list.clear()
-        self.viewer.scene.clear()
+        self.viewer.clear_scene()
         self.lbl_rgb.setText("Список очищен.")
         self.lbl_hsv.setText("")
         self.histogram.set_data([], [], [])
@@ -325,6 +333,7 @@ class MainWindow(QMainWindow):
     def set_tool(self, mode):
         self.btn_tool_rect.setChecked(mode == 'rect')
         self.btn_tool_line.setChecked(mode == 'line')
+        self.btn_tool_picker.setChecked(mode == 'picker')
         self.viewer.set_tool(mode)
         
         # Switch tabs to match useful info
@@ -340,6 +349,46 @@ class MainWindow(QMainWindow):
             self.calculate_stats()
         elif self.viewer.current_tool == 'line':
             self.calculate_profile()
+
+    def on_pixel_clicked(self, x, y):
+        if not self.viewer.image_path:
+            return
+
+        info = get_pixel_info(self.viewer.image_path, x, y)
+        if info:
+            r, g, b = info['r'], info['g'], info['b']
+            
+            # Normalize to Green = 1.0
+            norm_r = r / g if g != 0 else 0
+            norm_g = 1.0
+            norm_b = b / g if g != 0 else 0
+            
+            cmd = f"R,B {norm_r:.2f},{norm_b:.2f}"
+            
+            res_text = (
+                f"<div style='color: #4ec9b0; font-size: 14px;'><b>Пипетка (x={x}, y={y}):</b></div><br>"
+                f"<b>Цвет:</b> <span style='background-color: rgb({r},{g},{b});'>&nbsp;&nbsp;&nbsp;&nbsp;</span> RGB({r}, {g}, {b})<br>"
+                f"<b>HSV:</b> H={info['h']:.1f}, S={info['s']:.1f}, V={info['v']:.1f}<br>"
+                f"<b>Нормализация (G=1.0):</b> R={norm_r:.4f}, B={norm_b:.4f}<br>"
+                f"<div style='font-size: 16px; color: #4ec9b0; margin-top: 5px;'><b>{cmd}</b></div>"
+            )
+            self.lbl_rgb.setText(res_text)
+
+            # Also update HSV tab just in case
+            hsv_text = (
+                f"<b>Hue (Тон):</b> {info['h']:.1f}<br>"
+                f"<b>Saturation (Насыщ.):</b> {info['s']:.1f}<br>"
+                f"<b>Value (Яркость):</b> {info['v']:.1f}"
+            )
+            self.lbl_hsv.setText(hsv_text)
+            
+            # Switch to RGB tab to see result
+            self.stats_tabs.setCurrentIndex(0)
+            
+            # Enable copy button for this specific result too
+            self.last_command = cmd
+            self.btn_copy.setEnabled(True)
+            self.btn_copy.setText("📋 Копировать RGB")
 
     def calculate_profile(self):
         line_coords = self.viewer.get_line_coords()

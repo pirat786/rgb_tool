@@ -103,6 +103,38 @@ def calculate_image_stats(image_path, selection_rect):
         print(f"Error processing image: {e}")
         return None
 
+def get_pixel_info(image_path, x, y):
+    """
+    Returns RGB and HSV info for a single pixel at (x, y).
+    """
+    if not image_path:
+        return None
+
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert('RGB')
+            w, h = img.size
+            
+            if x < 0 or x >= w or y < 0 or y >= h:
+                return None
+
+            r, g, b = img.getpixel((x, y))
+            
+            # Convert single pixel to HSV using opencv
+            pixel_arr = np.array([[[r, g, b]]], dtype=np.uint8)
+            hsv_pixel = cv2.cvtColor(pixel_arr, cv2.COLOR_RGB2HSV)[0][0]
+            
+            return {
+                'r': r, 'g': g, 'b': b,
+                'h': float(hsv_pixel[0]),
+                's': float(hsv_pixel[1]),
+                'v': float(hsv_pixel[2]),
+                'x': x, 'y': y
+            }
+    except Exception as e:
+        print(f"Error getting pixel info: {e}")
+        return None
+
 def calculate_line_profile(image_path, line_coords):
     """
     Calculates RGB profile along a line.

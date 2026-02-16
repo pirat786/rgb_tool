@@ -337,6 +337,7 @@ class ImageViewer(QGraphicsView):
     grid_clicked = pyqtSignal(QRectF) 
     item_changed = pyqtSignal() # Signal when roi changes (release)
     files_dropped = pyqtSignal(list)
+    pixel_clicked = pyqtSignal(int, int) # NEW: Pipette signal
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -356,7 +357,7 @@ class ImageViewer(QGraphicsView):
         self.grid_cell_size = 50
         self.is_grid_enabled = False
         
-        self.current_tool = 'rect' # 'rect' or 'line'
+        self.current_tool = 'rect' # 'rect', 'line', or 'picker'
         self.is_drawing_line = False
         
         # Enable mouse tracking
@@ -376,6 +377,9 @@ class ImageViewer(QGraphicsView):
         if tool_mode == 'line':
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        elif tool_mode == 'picker':
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor) 
         else:
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
@@ -396,6 +400,12 @@ class ImageViewer(QGraphicsView):
         super().mousePressEvent(event)
         
         if event.isAccepted(): return
+
+        if self.current_tool == 'picker' and self.image_item:
+            sp = self.mapToScene(event.pos())
+            self.pixel_clicked.emit(int(sp.x()), int(sp.y()))
+            event.accept()
+            return
 
         if self.current_tool == 'line' and self.image_item:
             # Start drawing line
@@ -452,29 +462,53 @@ class ImageViewer(QGraphicsView):
             return self.overlay_path, self.overlay_item.pos()
         return None
 
-    def load_image(self, path):
-        self.image_path = path
-        self.pixmap = QPixmap(path)
+    def clear_scene(self):
+        """Safely clear the scene and reset all item references"""
+        self.scene.clear()
+        self.image_item = None
+        self.overlay_item = None
+        self.rect_item = None
+        self.line_item = None
+        self.grid_item = None
         
+        self.pixmap = None
+        self.overlay_pixmap = None
+        self.image_path = None
+        self.overlay_path = None
+
+    def load_image(self, path):
         # Save current overlay settings
         current_overlay_pixmap = self.overlay_pixmap
         current_overlay_opacity = 1.0
         if self.overlay_item:
-            current_overlay_opacity = self.overlay_item.opacity()
+            try:
+                current_overlay_opacity = self.overlay_item.opacity()
+            except RuntimeError: pass
 
         # Save current rect settings
         current_rect = None
+        current_pos = None
         if self.rect_item:
-            current_rect = self.rect_item.rect()
-            current_pos = self.rect_item.pos()
+            try:
+                current_rect = self.rect_item.rect()
+                current_pos = self.rect_item.pos()
+            except RuntimeError:
+                pass
             
         # Save current line settings
         current_line = None
+        current_line_pos = None
         if self.line_item:
-            current_line = self.line_item.line()
-            current_line_pos = self.line_item.pos()
+            try:
+                current_line = self.line_item.line()
+                current_line_pos = self.line_item.pos()
+            except RuntimeError:
+                pass
 
-        self.scene.clear()
+        self.clear_scene()
+        
+        self.image_path = path
+        self.pixmap = QPixmap(path)
         self.image_item = self.scene.addPixmap(self.pixmap)
         self.image_item.setZValue(0)
         
